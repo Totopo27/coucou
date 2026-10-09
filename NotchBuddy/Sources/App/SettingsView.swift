@@ -1173,6 +1173,8 @@ struct SettingsView: View {
         }
 
         CustomProvidersSettings()
+
+        MCPServersSettings()
     }
 
     // MARK: - Integrations section

@@ -160,6 +160,16 @@ final class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(Array(autoConnectDismissed).sorted(), forKey: "autoConnectDismissed") }
     }
 
+    /// Discovered and configured MCP servers for chat tools.
+    @Published var mcpServers: [MCPServerConfig] = [] {
+        didSet {
+            if let data = try? JSONEncoder().encode(mcpServers) {
+                UserDefaults.standard.set(data, forKey: "mcpServers")
+            }
+        }
+    }
+    @Published var isScanningMCPServers = false
+
     var activeCustomProvider: CustomProvider? {
         customProviders.first { $0.id == activeCustomProviderID }
     }
@@ -200,6 +210,28 @@ final class AppState: ObservableObject {
             providerModelFetchError[.custom] = nil
             if chatProvider == .custom { chatProvider = .anthropic }
         }
+    }
+
+    func scanMCPServers() {
+        guard !isScanningMCPServers else { return }
+        isScanningMCPServers = true
+        let discovered = MCPScanner.scanAll()
+        var updated = mcpServers
+        for server in discovered {
+            if let index = updated.firstIndex(where: { $0.id == server.id }) {
+                updated[index].sources = server.sources
+                updated[index].notes = server.notes
+            } else {
+                updated.append(server)
+            }
+        }
+        mcpServers = updated
+        isScanningMCPServers = false
+    }
+
+    func toggleMCPServer(id: String) {
+        guard let index = mcpServers.firstIndex(where: { $0.id == id }) else { return }
+        mcpServers[index].isEnabled.toggle()
     }
 
     // The always-on workspace pill (default: VS Code). Persisted.
@@ -591,6 +623,10 @@ final class AppState: ObservableObject {
         KeychainStore.shared.preload(customProviders.map(\.keychainKey))
         if let v = ud.string(forKey: "activeCustomProviderID") { activeCustomProviderID = v }
         autoConnectDismissed = Set(ud.stringArray(forKey: "autoConnectDismissed") ?? [])
+        if let data = ud.data(forKey: "mcpServers"),
+           let saved = try? JSONDecoder().decode([MCPServerConfig].self, from: data) {
+            mcpServers = saved
+        }
         // A removed or unsafe custom provider must not leave chat pointing at nothing.
         if chatProvider == .custom && activeCustomProvider == nil { chatProvider = .anthropic }
         if let v = ud.string(forKey: "googleChatModel"), !v.isEmpty { googleChatModel = v }
