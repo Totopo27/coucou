@@ -8,6 +8,7 @@ enum MCPClientError: Error, Equatable {
     case terminated
 }
 
+#if !APPSTORE
 /// Actor managing the stdio lifecycle of a single MCP server subprocess.
 actor MCPStdioClient: MCPClientProtocol {
 
@@ -211,3 +212,18 @@ actor MCPStdioClient: MCPClientProtocol {
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/usr/bin/\(command)"
     }
 }
+#else
+/// Sandboxed fallback for the Mac App Store: subprocesses are disabled.
+actor MCPStdioClient: MCPClientProtocol {
+    let config: MCPServerConfig
+    init(config: MCPServerConfig) {
+        self.config = config
+    }
+    func initializeAndListTools(timeout: TimeInterval = 15) async throws -> [MCPTool] {
+        return []
+    }
+    func callTool(name: String, arguments: [String: AnyCodable], timeout: TimeInterval = 60) async throws -> MCPToolResult {
+        return MCPToolResult(content: "Command-line MCP tools are disabled in the Mac App Store build. Use remote HTTP MCP servers instead.", isError: true)
+    }
+}
+#endif

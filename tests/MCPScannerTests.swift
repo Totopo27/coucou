@@ -18,6 +18,8 @@ enum MCPScannerTests {
         check(MCPScanner.normaliseValue("${env:MY_TOKEN}", home: testHome, env: testEnv) == "secret_abc_123", "expands ${env:VAR}")
         check(MCPScanner.normaliseValue("{env:MY_TOKEN}", home: testHome, env: testEnv) == "secret_abc_123", "expands {env:VAR}")
         check(MCPScanner.normaliseValue("${PORT}", home: testHome, env: testEnv) == "8080", "expands standard ${VAR}")
+        check(MCPScanner.normaliseValue("${HOST:-localhost}", home: testHome, env: testEnv) == "localhost", "resolves fallback default when unset")
+        check(MCPScanner.normaliseValue("${PORT:-3000}", home: testHome, env: testEnv) == "8080", "prefers env value over fallback default")
         check(MCPScanner.normaliseValue("plain-value", home: testHome, env: testEnv) == "plain-value", "leaves plain value unchanged")
 
         // MARK: - Masking Tests
@@ -156,6 +158,27 @@ enum MCPScannerTests {
         check(githubConfig != nil, "found github config")
         check(githubConfig?.sources.contains(.claudeDesktop) == true, "github includes claudeDesktop")
         check(githubConfig?.sources.contains(.cursor) == true, "github includes cursor")
+
+        // MARK: - Legacy SSE Transport Check
+        let sseJSON = Data("""
+        {
+          "mcpServers": {
+            "old-server": {
+              "url": "https://example.com/sse",
+              "type": "sse"
+            }
+          }
+        }
+        """.utf8)
+        let sseParsed = MCPScanner.parseStandardMCPServers(data: sseJSON, source: .claudeDesktop, home: testHome)
+        check(sseParsed.count == 1, "parsed sse server")
+        check(!sseParsed[0].isEnabled, "legacy sse server disabled by default")
+        check(sseParsed[0].notes.contains { $0.contains("Legacy SSE transport is deprecated") }, "legacy sse noted")
+
+        // MARK: - Windows Candidates Check
+        let winCandidates = MCPScanner.candidatePaths(home: "C:/Users/testuser", appData: "C:/Users/testuser/AppData/Roaming")
+        check(winCandidates.contains { $0.path.contains("AppData/Roaming/Claude/claude_desktop_config.json") }, "found windows claude path")
+        check(winCandidates.contains { $0.path.contains("AppData/Roaming/Code/User/mcp.json") }, "found windows vscode path")
 
         print("All \(cases) MCPScanner tests passed.")
     }

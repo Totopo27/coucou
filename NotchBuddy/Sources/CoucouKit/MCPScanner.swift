@@ -26,6 +26,21 @@ enum MCPScanner {
             s = regex.stringByReplacingMatches(in: s, options: [], range: range, withTemplate: "$$$${$1}")
         }
 
+        // Support ${NAME:-default}
+        let fallbackPattern = #"\$\{([A-Za-z0-9_]+):-([^}]*)\}"#
+        if let regex = try? NSRegularExpression(pattern: fallbackPattern) {
+            let matches = regex.matches(in: s, range: NSRange(s.startIndex..<s.endIndex, in: s))
+            for match in matches.reversed() {
+                guard let fullRange = Range(match.range, in: s),
+                      let keyRange = Range(match.range(at: 1), in: s),
+                      let defaultRange = Range(match.range(at: 2), in: s) else { continue }
+                let key = String(s[keyRange])
+                let def = String(s[defaultRange])
+                let val = env[key] ?? def
+                s.replaceSubrange(fullRange, with: val)
+            }
+        }
+
         // Expand known environment variables if available
         let varPattern = #"\$\{([A-Za-z0-9_]+)\}"#
         if let regex = try? NSRegularExpression(pattern: varPattern) {
@@ -163,8 +178,15 @@ enum MCPScanner {
                 let normURL = normaliseValue(urlString, home: home)
                 let headers = (serverObj["headers"] as? [String: String]) ?? [:]
                 let id = slug(from: name, existing: result.map(\.id))
+                let isLegacySSE = (serverObj["type"] as? String)?.lowercased() == "sse" || normURL.lowercased().hasSuffix("/sse")
+                var notes: [String] = []
+                if isLegacySSE {
+                    notes.append("Legacy SSE transport is deprecated; streamable HTTP POST is recommended.")
+                }
                 result.append(MCPServerConfig(id: id, name: name, sources: [source],
-                                              transport: .http(url: normURL, headers: headers)))
+                                              transport: .http(url: normURL, headers: headers),
+                                              isEnabled: !isLegacySSE,
+                                              notes: notes))
                 continue
             }
 
@@ -174,15 +196,21 @@ enum MCPScanner {
             let args = rawArgs.map { normaliseValue($0, home: home) }
 
             var envMap: [String: String] = [:]
+            var notes: [String] = []
             if let rawEnv = serverObj["env"] as? [String: String] {
                 for (k, v) in rawEnv {
-                    envMap[k] = normaliseValue(v, home: home)
+                    let normV = normaliseValue(v, home: home)
+                    envMap[k] = normV
+                    if normV.contains("${input:") {
+                        notes.append("Requires setup: input value for '\(k)' needs to be provided.")
+                    }
                 }
             }
 
             let id = slug(from: name, existing: result.map(\.id))
             result.append(MCPServerConfig(id: id, name: name, sources: [source],
-                                          transport: .stdio(command: command, args: args, env: envMap)))
+                                          transport: .stdio(command: command, args: args, env: envMap),
+                                          notes: notes))
         }
         return result
     }
@@ -245,9 +273,9 @@ enum MCPScanner {
         let source: MCPServerSource
     }
 
-    /// Standard configuration file locations per developer tool.
-    static func candidatePaths(home: String) -> [CandidatePath] {
-        return [
+    /// Standard configuration file locations per developer tool across macOS, Linux, and Windows.
+    static func candidatePaths(home: String, appData: String? = ProcessInfo.processInfo.environment["APPDATA"]) -> [CandidatePath] {
+        var paths = [
             // Claude Desktop
             CandidatePath(path: "\(home)/Library/Application Support/Claude/claude_desktop_config.json", source: .claudeDesktop),
             CandidatePath(path: "\(home)/.config/Claude/claude_desktop_config.json", source: .claudeDesktop),
@@ -269,6 +297,19 @@ enum MCPScanner {
             CandidatePath(path: "\(home)/.config/opencode/opencode.json", source: .opencode),
             CandidatePath(path: "\(home)/.config/opencode/mcp.json", source: .opencode),
         ]
+
+        // Windows candidates (when %APPDATA% is defined or in home folder)
+        if let appData = appData, !appData.isEmpty {
+            let cleanAppData = appData.replacingOccurrences(of: "\\", with: "/")
+            paths.append(CandidatePath(path: "\(cleanAppData)/Claude/claude_desktop_config.json", source: .claudeDesktop))
+            paths.append(CandidatePath(path: "\(cleanAppData)/Code/User/mcp.json", source: .vscode))
+            paths.append(CandidatePath(path: "\(cleanAppData)/opencode/opencode.json", source: .opencode))
+        } else {
+            paths.append(CandidatePath(path: "\(home)/AppData/Roaming/Claude/claude_desktop_config.json", source: .claudeDesktop))
+            paths.append(CandidatePath(path: "\(home)/AppData/Roaming/Code/User/mcp.json", source: .vscode))
+        }
+
+        return paths
     }
 
     /// Reads all detected configuration files and returns the deduplicated list of MCP servers.
