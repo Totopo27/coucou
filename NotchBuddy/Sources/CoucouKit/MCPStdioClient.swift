@@ -63,6 +63,11 @@ actor MCPStdioClient: MCPClientProtocol {
         let outPipe = Pipe()
         let errPipe = Pipe()
 
+        // Drain stderr continuously to prevent XNU pipe buffer exhaustion (64KB deadlock)
+        errPipe.fileHandleForReading.readabilityHandler = { handle in
+            _ = handle.availableData
+        }
+
         proc.standardInput = inPipe
         proc.standardOutput = outPipe
         proc.standardError = errPipe
@@ -70,6 +75,7 @@ actor MCPStdioClient: MCPClientProtocol {
         do {
             try proc.run()
         } catch {
+            errPipe.fileHandleForReading.readabilityHandler = nil
             throw MCPClientError.processStartFailed("Could not start \(command): \(error.localizedDescription)")
         }
 
@@ -81,6 +87,7 @@ actor MCPStdioClient: MCPClientProtocol {
 
     /// Stops the subprocess and closes pipes.
     func stop() {
+        stderrPipe?.fileHandleForReading.readabilityHandler = nil
         if let proc = process, proc.isRunning {
             proc.terminate()
             proc.waitUntilExit()
@@ -99,8 +106,9 @@ actor MCPStdioClient: MCPClientProtocol {
         try start()
 
         if !isInitialized {
-            let initReq = MCPJSONRPC.initializeRequest(id: getNextID())
-            let initResp = try await sendRequest(initReq, timeout: timeout)
+            let reqID = getNextID()
+            let initReq = MCPJSONRPC.initializeRequest(id: reqID)
+            let initResp = try await sendRequest(initReq, expectedID: reqID, timeout: timeout)
             guard let (_, result, error) = MCPJSONRPC.parseResponse(line: initResp) else {
                 throw MCPClientError.invalidResponse("Invalid response during initialize.")
             }
@@ -119,8 +127,9 @@ actor MCPStdioClient: MCPClientProtocol {
         }
 
         // Fetch tools
-        let listReq = MCPJSONRPC.toolsListRequest(id: getNextID())
-        let listResp = try await sendRequest(listReq, timeout: timeout)
+        let reqID = getNextID()
+        let listReq = MCPJSONRPC.toolsListRequest(id: reqID)
+        let listResp = try await sendRequest(listReq, expectedID: reqID, timeout: timeout)
         guard let (_, result, error) = MCPJSONRPC.parseResponse(line: listResp) else {
             throw MCPClientError.invalidResponse("Invalid response for tools/list.")
         }
@@ -142,8 +151,9 @@ actor MCPStdioClient: MCPClientProtocol {
             _ = try await initializeAndListTools()
         }
 
-        let req = MCPJSONRPC.toolCallRequest(id: getNextID(), name: name, arguments: arguments)
-        let resp = try await sendRequest(req, timeout: timeout)
+        let reqID = getNextID()
+        let req = MCPJSONRPC.toolCallRequest(id: reqID, name: name, arguments: arguments)
+        let resp = try await sendRequest(req, expectedID: reqID, timeout: timeout)
         guard let (_, result, error) = MCPJSONRPC.parseResponse(line: resp) else {
             throw MCPClientError.invalidResponse("Invalid response for tools/call.")
         }
@@ -163,10 +173,14 @@ actor MCPStdioClient: MCPClientProtocol {
               let data = text.data(using: .utf8) else {
             throw MCPClientError.processStartFailed("Process stdin is closed.")
         }
-        handle.write(data)
+        do {
+            try handle.write(contentsOf: data)
+        } catch {
+            throw MCPClientError.processStartFailed("Failed writing to stdin: \(error.localizedDescription)")
+        }
     }
 
-    private func sendRequest(_ requestText: String, timeout: TimeInterval) async throws -> String {
+    private func sendRequest(_ requestText: String, expectedID: Int, timeout: TimeInterval) async throws -> String {
         try sendData(requestText)
 
         guard let stdoutHandle = stdoutPipe?.fileHandleForReading else {
@@ -177,8 +191,12 @@ actor MCPStdioClient: MCPClientProtocol {
             group.addTask {
                 for try await line in stdoutHandle.bytes.lines {
                     let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !trimmed.isEmpty && trimmed.hasPrefix("{") {
-                        return trimmed
+                    guard !trimmed.isEmpty && trimmed.hasPrefix("{") else { continue }
+                    // Filter by expected JSON-RPC id to prevent desync on asynchronous events/notifications
+                    if let parsed = MCPJSONRPC.parseResponse(line: trimmed), let respID = parsed.id {
+                        if respID == expectedID {
+                            return trimmed
+                        }
                     }
                 }
                 throw MCPClientError.terminated

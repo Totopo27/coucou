@@ -23,7 +23,7 @@ enum MCPScanner {
         let envPrefixPattern = #"(?:\$\{env:|\{env:)([A-Za-z0-9_]+)\}"#
         if let regex = try? NSRegularExpression(pattern: envPrefixPattern) {
             let range = NSRange(s.startIndex..<s.endIndex, in: s)
-            s = regex.stringByReplacingMatches(in: s, options: [], range: range, withTemplate: "$$$${$1}")
+            s = regex.stringByReplacingMatches(in: s, options: [], range: range, withTemplate: "$$1")
         }
 
         // Support ${NAME:-default}
@@ -274,11 +274,14 @@ enum MCPScanner {
     }
 
     /// Standard configuration file locations per developer tool across macOS, Linux, and Windows.
-    static func candidatePaths(home: String, appData: String? = ProcessInfo.processInfo.environment["APPDATA"]) -> [CandidatePath] {
+    static func candidatePaths(home: String,
+                                appData: String? = ProcessInfo.processInfo.environment["APPDATA"],
+                                xdgConfig: String? = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"]) -> [CandidatePath] {
+        let linuxConfig = (xdgConfig != nil && !xdgConfig!.isEmpty) ? xdgConfig! : "\(home)/.config"
         var paths = [
             // Claude Desktop
             CandidatePath(path: "\(home)/Library/Application Support/Claude/claude_desktop_config.json", source: .claudeDesktop),
-            CandidatePath(path: "\(home)/.config/Claude/claude_desktop_config.json", source: .claudeDesktop),
+            CandidatePath(path: "\(linuxConfig)/Claude/claude_desktop_config.json", source: .claudeDesktop),
 
             // Claude Code
             CandidatePath(path: "\(home)/.claude.json", source: .claudeCode),
@@ -288,14 +291,14 @@ enum MCPScanner {
 
             // VS Code
             CandidatePath(path: "\(home)/Library/Application Support/Code/User/mcp.json", source: .vscode),
-            CandidatePath(path: "\(home)/.config/Code/User/mcp.json", source: .vscode),
+            CandidatePath(path: "\(linuxConfig)/Code/User/mcp.json", source: .vscode),
 
             // Windsurf
             CandidatePath(path: "\(home)/.codeium/windsurf/mcp_config.json", source: .windsurf),
 
             // OpenCode
-            CandidatePath(path: "\(home)/.config/opencode/opencode.json", source: .opencode),
-            CandidatePath(path: "\(home)/.config/opencode/mcp.json", source: .opencode),
+            CandidatePath(path: "\(linuxConfig)/opencode/opencode.json", source: .opencode),
+            CandidatePath(path: "\(linuxConfig)/opencode/mcp.json", source: .opencode),
         ]
 
         // Windows candidates (when %APPDATA% is defined or in home folder)

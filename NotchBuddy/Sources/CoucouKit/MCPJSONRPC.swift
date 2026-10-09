@@ -180,9 +180,11 @@ enum MCPJSONRPC {
     static func decodeFunctionName(_ name: String) -> (serverID: String, toolName: String)? {
         guard name.hasPrefix("mcp__") else { return nil }
         let trimmed = String(name.dropFirst(5))
-        let parts = trimmed.split(separator: "_", maxSplits: 1, omittingEmptySubsequences: true)
-        guard parts.count == 2 else { return nil }
-        return (String(parts[0]), String(parts[1]))
+        let components = trimmed.components(separatedBy: "__")
+        guard components.count >= 2 else { return nil }
+        let serverID = components[0]
+        let toolName = components.dropFirst().joined(separator: "__")
+        return (serverID, toolName)
     }
 
     /// Formats an MCPTool as an OpenAI tool object for chat completion payloads.

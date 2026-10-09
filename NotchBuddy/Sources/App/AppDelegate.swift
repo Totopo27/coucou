@@ -18,6 +18,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Warm up Keychain cache on main thread BEFORE any poller or view touches it
         _ = KeychainStore.shared
         NSApp.setActivationPolicy(.accessory)
+        #if !APPSTORE
+        signal(SIGPIPE, SIG_IGN)
+        #endif
         setupMenuBarItem()
         setupIsland()
         // Connect the AI tools and servers already on this Mac to the chat (no key to paste).

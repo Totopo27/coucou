@@ -115,6 +115,8 @@ enum MCPClientTests {
 
         let decodedName = MCPJSONRPC.decodeFunctionName("mcp__demo__get_weather")
         check(decodedName?.serverID == "demo" && decodedName?.toolName == "get_weather", "decoded function name")
+        let decodedComplex = MCPJSONRPC.decodeFunctionName("mcp__github_mcp__create_issue")
+        check(decodedComplex?.serverID == "github_mcp" && decodedComplex?.toolName == "create_issue", "decoded name with underscores in serverID and toolName")
         check(MCPJSONRPC.decodeFunctionName("unrelated_func") == nil, "rejects non-mcp function name")
 
         // MARK: - AnyCodable SerDe

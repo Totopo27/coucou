@@ -102,8 +102,14 @@ actor MCPHTTPClient: MCPClientProtocol {
         let response: URLResponse
         do {
             (data, response) = try await session.data(for: req)
+        } catch let err as URLError {
+            if err.code == .timedOut {
+                throw MCPClientError.timeout("HTTP request timed out after \(timeout)s.")
+            } else {
+                throw MCPClientError.serverError("Network error: \(err.localizedDescription)")
+            }
         } catch {
-            throw MCPClientError.timeout("HTTP request failed: \(error.localizedDescription)")
+            throw MCPClientError.serverError("HTTP request failed: \(error.localizedDescription)")
         }
 
         guard let http = response as? HTTPURLResponse else {

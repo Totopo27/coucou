@@ -38,8 +38,14 @@ final class MCPToolRegistry: ObservableObject {
         clients = clients.filter { activeIDs.contains($0.key) }
 
         for config in enabledConfigs {
-            let client = clients[config.id] ?? makeClient(for: config)
-            clients[config.id] = client
+            // Re-create client if config changed (e.g. arguments, env, transport)
+            let client: any MCPClientProtocol
+            if let existing = clients[config.id], existing.config == config {
+                client = existing
+            } else {
+                client = makeClient(for: config)
+                clients[config.id] = client
+            }
 
             do {
                 let tools = try await client.initializeAndListTools(timeout: 10)
