@@ -9,7 +9,7 @@ enum MCPClientError: Error, Equatable {
 }
 
 /// Actor managing the stdio lifecycle of a single MCP server subprocess.
-actor MCPStdioClient {
+actor MCPStdioClient: MCPClientProtocol {
 
     let config: MCPServerConfig
     private var process: Process?

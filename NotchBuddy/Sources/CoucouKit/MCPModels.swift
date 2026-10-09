@@ -219,3 +219,10 @@ struct MCPToolResult: Codable, Equatable, Sendable {
     let content: String
     let isError: Bool
 }
+
+/// Common interface for interacting with an MCP server regardless of transport.
+protocol MCPClientProtocol: Sendable {
+    var config: MCPServerConfig { get }
+    func initializeAndListTools(timeout: TimeInterval) async throws -> [MCPTool]
+    func callTool(name: String, arguments: [String: AnyCodable], timeout: TimeInterval) async throws -> MCPToolResult
+}

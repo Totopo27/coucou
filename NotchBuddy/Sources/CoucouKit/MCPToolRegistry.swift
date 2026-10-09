@@ -9,9 +9,18 @@ final class MCPToolRegistry: ObservableObject {
     @Published private(set) var availableTools: [MCPTool] = []
     @Published private(set) var isRefreshing = false
 
-    private var clients: [String: MCPStdioClient] = [:]
+    private var clients: [String: any MCPClientProtocol] = [:]
 
     private init() {}
+
+    private func makeClient(for config: MCPServerConfig) -> any MCPClientProtocol {
+        switch config.transport {
+        case .stdio:
+            return MCPStdioClient(config: config)
+        case .http:
+            return MCPHTTPClient(config: config)
+        }
+    }
 
     // MARK: - Tool Discovery & Cache
 
@@ -29,7 +38,7 @@ final class MCPToolRegistry: ObservableObject {
         clients = clients.filter { activeIDs.contains($0.key) }
 
         for config in enabledConfigs {
-            let client = clients[config.id] ?? MCPStdioClient(config: config)
+            let client = clients[config.id] ?? makeClient(for: config)
             clients[config.id] = client
 
             do {
