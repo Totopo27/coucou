@@ -227,11 +227,13 @@ final class AppState: ObservableObject {
         }
         mcpServers = updated
         isScanningMCPServers = false
+        Task { await MCPToolRegistry.shared.refreshTools(from: updated) }
     }
 
     func toggleMCPServer(id: String) {
         guard let index = mcpServers.firstIndex(where: { $0.id == id }) else { return }
         mcpServers[index].isEnabled.toggle()
+        Task { await MCPToolRegistry.shared.refreshTools(from: mcpServers) }
     }
 
     // The always-on workspace pill (default: VS Code). Persisted.
@@ -626,6 +628,7 @@ final class AppState: ObservableObject {
         if let data = ud.data(forKey: "mcpServers"),
            let saved = try? JSONDecoder().decode([MCPServerConfig].self, from: data) {
             mcpServers = saved
+            Task { await MCPToolRegistry.shared.refreshTools(from: saved) }
         }
         // A removed or unsafe custom provider must not leave chat pointing at nothing.
         if chatProvider == .custom && activeCustomProvider == nil { chatProvider = .anthropic }
