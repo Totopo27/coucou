@@ -235,3 +235,13 @@ protocol MCPClientProtocol: Sendable {
     func initializeAndListTools(timeout: TimeInterval) async throws -> [MCPTool]
     func callTool(name: String, arguments: [String: AnyCodable], timeout: TimeInterval) async throws -> MCPToolResult
 }
+
+extension MCPClientProtocol {
+    func initializeAndListTools() async throws -> [MCPTool] {
+        try await initializeAndListTools(timeout: 10)
+    }
+
+    func callTool(name: String, arguments: [String: AnyCodable]) async throws -> MCPToolResult {
+        try await callTool(name: name, arguments: arguments, timeout: 60)
+    }
+}
