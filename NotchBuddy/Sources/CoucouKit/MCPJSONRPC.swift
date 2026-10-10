@@ -18,7 +18,7 @@ enum MCPJSONRPC {
         if let params {
             obj["params"] = params
         }
-        guard let data = try? JSONSerialization.data(withJSONObject: obj),
+        guard let data = try? JSONSerialization.data(withJSONObject: obj, options: [.withoutEscapingSlashes]),
               let text = String(data: data, encoding: .utf8) else {
             return #"{"jsonrpc":"2.0","id":\#(id),"method":"\#(method)"}"# + "\n"
         }
@@ -34,7 +34,7 @@ enum MCPJSONRPC {
         if let params {
             obj["params"] = params
         }
-        guard let data = try? JSONSerialization.data(withJSONObject: obj),
+        guard let data = try? JSONSerialization.data(withJSONObject: obj, options: [.withoutEscapingSlashes]),
               let text = String(data: data, encoding: .utf8) else {
             return #"{"jsonrpc":"2.0","method":"\#(method)"}"# + "\n"
         }
