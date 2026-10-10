@@ -77,13 +77,17 @@ enum MCPScanner {
 
     /// Masks sensitive components of URLs (removes query strings or user/passwords).
     static func maskURL(_ rawURL: String) -> String {
-        guard var comps = URLComponents(string: rawURL) else { return rawURL }
+        guard let url = URL(string: rawURL), var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return rawURL }
         comps.user = nil
         comps.password = nil
         if comps.query != nil {
-            comps.query = "••••"
+            comps.percentEncodedQuery = "%E2%80%A2%E2%80%A2%E2%80%A2%E2%80%A2"
         }
-        return comps.string ?? rawURL
+        // Decode percent-encoded bullet points if returned as %E2%80%A2
+        if let s = comps.string {
+            return s.replacingOccurrences(of: "%E2%80%A2%E2%80%A2%E2%80%A2%E2%80%A2", with: "••••")
+        }
+        return rawURL
     }
 
     // MARK: - Parsing Tools
