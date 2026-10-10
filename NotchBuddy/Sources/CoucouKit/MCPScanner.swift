@@ -175,8 +175,8 @@ enum MCPScanner {
 
     private static func parseServerDictionary(_ dict: [String: Any], source: MCPServerSource, home: String) -> [MCPServerConfig] {
         var result: [MCPServerConfig] = []
-        for (name, val) in dict {
-            guard let serverObj = val as? [String: Any] else { continue }
+        for name in dict.keys.sorted() {
+            guard let val = dict[name], let serverObj = val as? [String: Any] else { continue }
 
             if let urlString = serverObj["url"] as? String {
                 let normURL = normaliseValue(urlString, home: home)
