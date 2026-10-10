@@ -320,6 +320,7 @@ enum MCPScanner {
     }
 
     /// Reads all detected configuration files and returns the deduplicated list of MCP servers.
+    #if os(macOS)
     static func scanAll(home: String = FileManager.default.homeDirectoryForCurrentUser.path,
                         fileReader: (String) -> Data? = { path in try? Data(contentsOf: URL(fileURLWithPath: path)) }) -> [MCPServerConfig] {
         var found: [MCPServerConfig] = []
@@ -338,4 +339,10 @@ enum MCPScanner {
         }
         return deduplicate(servers: found)
     }
+    #else
+    static func scanAll(home: String = NSHomeDirectory(),
+                        fileReader: (String) -> Data? = { path in try? Data(contentsOf: URL(fileURLWithPath: path)) }) -> [MCPServerConfig] {
+        return []
+    }
+    #endif
 }

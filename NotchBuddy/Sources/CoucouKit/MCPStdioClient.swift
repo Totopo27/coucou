@@ -1,6 +1,6 @@
 import Foundation
 
-#if !APPSTORE
+#if !APPSTORE && os(macOS)
 /// Actor managing the stdio lifecycle of a single MCP server subprocess.
 actor MCPStdioClient: MCPClientProtocol {
 
@@ -223,7 +223,7 @@ actor MCPStdioClient: MCPClientProtocol {
     }
 }
 #else
-/// Sandboxed fallback for the Mac App Store: subprocesses are disabled.
+/// Sandboxed fallback for the Mac App Store and iOS builds: subprocesses are disabled.
 actor MCPStdioClient: MCPClientProtocol {
     let config: MCPServerConfig
     init(config: MCPServerConfig) {
@@ -233,7 +233,7 @@ actor MCPStdioClient: MCPClientProtocol {
         return []
     }
     func callTool(name: String, arguments: [String: AnyCodable], timeout: TimeInterval = 60) async throws -> MCPToolResult {
-        return MCPToolResult(content: "Command-line MCP tools are disabled in the Mac App Store build. Use remote HTTP MCP servers instead.", isError: true)
+        return MCPToolResult(content: "Command-line MCP tools are disabled in this build. Use remote HTTP MCP servers instead.", isError: true)
     }
 }
 #endif
