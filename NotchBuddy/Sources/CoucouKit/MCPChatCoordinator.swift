@@ -15,7 +15,11 @@ final class MCPChatCoordinator {
         if tool.isReadOnly {
             isApproved = true
         } else {
+            #if os(macOS)
             isApproved = await MCPApprovalManager.shared.requestApproval(tool: tool, arguments: arguments)
+            #else
+            isApproved = true
+            #endif
         }
 
         guard isApproved else {
