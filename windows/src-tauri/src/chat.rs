@@ -201,6 +201,7 @@ pub async fn send(
     app: &AppHandle,
     chat: &Chat,
     settings: &Settings,
+    mcp: &crate::mcp::Registry,
     query: String,
     context: Option<ChatContext>,
 ) -> Result<ChatReply, String> {
@@ -211,7 +212,7 @@ pub async fn send(
         return claude::send(chat, &model, query, context).await;
     }
     if let Some(p) = openai_compat::provider(provider) {
-        return openai_compat::send(chat, p, &model, query, context).await;
+        return openai_compat::send(chat, p, &model, mcp, query, context).await;
     }
     if let Some(server) = local_chat::server(settings, provider) {
         return local_chat::send(app, chat, &server, &model, query, context).await;
