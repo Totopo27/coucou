@@ -23,7 +23,7 @@ enum MCPScanner {
         let envPrefixPattern = #"(?:\$\{env:|\{env:)([A-Za-z0-9_]+)\}"#
         if let regex = try? NSRegularExpression(pattern: envPrefixPattern) {
             let range = NSRange(s.startIndex..<s.endIndex, in: s)
-            s = regex.stringByReplacingMatches(in: s, options: [], range: range, withTemplate: "$$1")
+            s = regex.stringByReplacingMatches(in: s, options: [], range: range, withTemplate: #"\${$1}"#)
         }
 
         // Support ${NAME:-default}
