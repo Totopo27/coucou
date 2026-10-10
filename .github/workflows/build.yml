@@ -36,6 +36,27 @@ jobs:
       - name: Test open on hover
         run: bash scripts/test-island-hover.sh
 
+      - name: Wake phrase tests
+        run: bash scripts/test-voice-wake.sh
+
+      - name: Energy VAD tests
+        run: bash scripts/test-voice-vad.sh
+
+      - name: Voice island FSM tests
+        run: bash scripts/test-voice-island.sh
+
+      - name: Voice IntentParser tests
+        run: bash scripts/test-voice-intent.sh
+
+      - name: Voice EntityResolver tests
+        run: bash scripts/test-voice-entity.sh
+
+      - name: Voice ActionRunner tests
+        run: bash scripts/test-voice-runner.sh
+
+      - name: Voice conversation end-phrase tests
+        run: bash scripts/test-voice-conversation.sh
+
       - name: Test terminal target
         run: bash scripts/test-terminal-target.sh
 
@@ -71,6 +92,18 @@ jobs:
 
       - name: Claude settings file tests
         run: bash scripts/test-claude-settings.sh
+
+      - name: Turn end policy tests
+        run: bash scripts/test-turn-end-policy.sh
+
+      - name: Voice spotter generation tests
+        run: bash scripts/test-voice-spotter-gen.sh
+
+      - name: Voice wake blocked tests
+        run: bash scripts/test-voice-wake-blocked.sh
+
+      - name: Conversation context tests
+        run: bash scripts/test-conversation-context.sh
 
       - name: Build
         run: |

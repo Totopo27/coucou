@@ -22,6 +22,19 @@ final class IslandWindowController: NSWindowController {
     // Confused recovery timer (set by handleDizzy)
     private var confusedRecoveryTimer: DispatchWorkItem?
 
+    // Voice result auto-dismiss timer
+    #if !APPSTORE
+    private var voiceResultWork: DispatchWorkItem?
+    /// True only while Coucou listens for the answer to a question it asked.
+    private var isInConversation = false
+    /// Context (last action, on-device model session) is kept a little after a turn so
+    /// "OK Coucou, et Stripe aussi" still works; this resets it.
+    private var voiceContextExpiry: DispatchWorkItem?
+    private var conversationContext = ConversationContext()
+    private var consecutiveFailures = 0
+    private var hasSpokenPasCompris = false
+    #endif
+
     // Suppress peek sound on next reveal (e.g. musicReveal)
     var silentNextReveal = false
 
@@ -151,6 +164,9 @@ final class IslandWindowController: NSWindowController {
         startLocalKeyMonitor()
         startHotKeys()
         wireFSM()
+        #if !APPSTORE
+        VoiceActionRunner.shared.configureLive()
+        #endif
 
         // Make panel key whenever the prompt/chat view becomes active
         // (nonactivatingPanel never auto-becomes key, but TextField needs it)
@@ -248,11 +264,18 @@ final class IslandWindowController: NSWindowController {
                     } else {
                         SoundEngine.shared.play("peek")
                     }
+                } else if from == .listening {
+                    // Voice session ended — no peek sound, just compact
+                    #if !APPSTORE
+                    VoiceEngine.shared.cancelListening()
+                    #endif
                 }
                 // setMode BEFORE changing view: onChange(of: state.view) guards on .expanded,
                 // so setting view while already compact won't trigger a spurious open animation.
                 self.setMode(.compact)
-                if from == .coucou { self.state.view = self.defaultView() }
+                // Reset view when leaving .coucou or .listening so stale views
+                // (e.g. .voiceResult) never linger on a collapsed island.
+                if from == .coucou || from == .listening { self.state.view = self.defaultView() }
                 // Start 60s hide timer if mouse is not currently over the island
                 if !self.wasInIsland { self.fsm.mouseLeft() }
 
@@ -265,6 +288,13 @@ final class IslandWindowController: NSWindowController {
 
             case .coucou:
                 self.expand(to: .greeting)
+
+            case .listening:
+                // Island stays compact; caption panel handles display.
+                #if !APPSTORE
+                let screen = IslandWindowController.islandScreen()
+                VoiceCaptionManager.shared.show(on: screen, notchHeight: AppState.shared.notchHeight)
+                #endif
             }
         }
 
@@ -276,6 +306,52 @@ final class IslandWindowController: NSWindowController {
         }
 
         fsm.isHeldOpen = { AppState.shared.pendingApproval != nil }
+
+        // Voice: wake phrase detected → open listening island
+        #if !APPSTORE
+        NotificationCenter.default.addObserver(
+            forName: .voiceWoke, object: nil, queue: .main
+        ) { [weak self] note in
+            let isDirect = (note.object as? String) == "direct"
+            Task { @MainActor [weak self] in
+                // Genuine wake phrase (not programmatic re-listen) → clear any pending question
+                AppState.shared.voiceActive = true
+                self?.voiceContextExpiry?.cancel()
+                if !isDirect {
+                    VoiceActionRunner.shared.pendingQuestion = nil
+                    // The island stays compact now: the tick says "I heard OK Coucou".
+                    if AppState.shared.soundEnabled { SoundEngine.shared.play("tick") }
+                }
+                self?.fsm.voiceWoke()
+            }
+        }
+        // Voice: command session ended — run intent, show result for 2 s, then collapse.
+        NotificationCenter.default.addObserver(
+            forName: .voiceFinished, object: nil, queue: .main
+        ) { [weak self] note in
+            let transcript = note.object as? String ?? ""
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if transcript.isEmpty {
+                    if VoiceActionRunner.shared.pendingQuestion != nil {
+                        // Re-listen timed out with no answer → show cancellation message
+                        let result = await VoiceActionRunner.shared.handleAnswer(
+                            "", availablePills: PillCatalog.available)
+                        AppState.shared.voiceResult = result
+                        self.expand(to: .voiceResult)
+                        self.scheduleVoiceDismiss(delay: 1.5)
+                    } else if self.isInConversation {
+                        // No answer to Coucou's question: stop listening.
+                        self.closeVoiceTurn()
+                    } else {
+                        self.fsm.voiceFinished()
+                    }
+                } else {
+                    await self.handleVoiceCommand(transcript)
+                }
+            }
+        }
+        #endif
     }
 
     // MARK: - Polling loop
@@ -461,6 +537,20 @@ final class IslandWindowController: NSWindowController {
         guard fsm.isHeldOpen?() != true || keepsApprovalPending else { return }
         if !keepsApprovalPending { state.isPinned = false }
         finishedPinTimer?.cancel()
+        #if !APPSTORE
+        VoiceSpeaker.shared.stop()
+        if isInConversation || AppState.shared.voiceActive {
+            // Closing the island ends the voice exchange (speech was just cut, so its
+            // "finished" callback will not come): reset everything that it would have.
+            isInConversation = false
+            voiceResultWork?.cancel()
+            voiceResultWork = nil
+            VoiceEngine.shared.endConversation()
+            VoiceCaptionManager.shared.hide(after: 0)
+            AppState.shared.voiceResult = nil
+            AppState.shared.voiceActive = false
+        }
+        #endif
         // Keep the FSM in step with what is on screen (home/coucou → petit now).
         fsm.collapse()
         setMode(.compact)
@@ -536,6 +626,12 @@ final class IslandWindowController: NSWindowController {
                 islandPanel.makeKey()
                 expand(to: .wardrobe)
             }
+
+        case .talkToCoucou:
+            #if !APPSTORE
+            VoiceSpeaker.shared.stop()
+            VoiceEngine.shared.startListeningDirectly()
+            #endif
         }
     }
 
@@ -1240,6 +1336,405 @@ struct GhostBotView: View {
             }
     }
 }
+
+// MARK: - Voice command handling
+
+#if !APPSTORE
+extension IslandWindowController {
+
+    /// Run the intent derived from `transcript`, show VoiceResultView, then continue conversation or collapse.
+    @MainActor
+    func handleVoiceCommand(_ transcript: String) async {
+        let t0     = Date()
+        let pills  = PillCatalog.available
+        let runner = VoiceActionRunner.shared
+
+        // Propagate recognition locale so responses are in the spoken language.
+        runner.commandLocale = VoiceEngine.shared.speechLocale
+
+        // ── Conversation end phrase ────────────────────────────────────────────────
+        let normTranscript = WakePhrase.normalise(transcript)
+        if isInConversation && TurnEndPolicy.conversationEndPhrases.contains(normTranscript) {
+            VoiceTranscriptHistory.shared.record(transcript: transcript, note: "end", origin: .end)
+            closeVoiceTurn()
+            return
+        }
+
+        // ── Short noise / spurious activation guard (conversation mode only) ────────
+        // A transcript shorter than 2 words that isn't a pill name or known command
+        // is almost certainly a false activation. Silently re-listen without feedback.
+        if isInConversation {
+            let normWords = normTranscript.split(separator: " ").map(String.init)
+            if normWords.count < 2 {
+                let isPillName = pills.contains { IntentParser.normalise($0.name) == normTranscript }
+                let isKnown    = IntentParser.parse(normTranscript, pills: pills) != .unknown
+                if !isPillName && !isKnown {
+                    // Never log the words themselves (VOICE.md: no transcript on disk).
+                    appendAppLog("nb.log", "[Voice] ignoring short spurious transcript")
+                    VoiceTranscriptHistory.shared.record(transcript: transcript, note: "—", origin: .ignored)
+                    closeVoiceTurn()
+                    return
+                }
+            }
+        }
+
+        // ── Follow-up answer to a pending question ─────────────────────────────────
+        if runner.pendingQuestion != nil {
+            let result = await runner.handleAnswer(transcript, availablePills: pills)
+            VoiceTranscriptHistory.shared.record(transcript: transcript, note: result.message, origin: .answer)
+            if result.outcome != .success {
+                NotificationCenter.default.post(name: .botDizzy, object: nil)
+            }
+            VoiceCaptionManager.shared.setUserLine(transcript)
+            VoiceCaptionManager.shared.appendResponse(result.message)
+            AppState.shared.voiceResult = result
+            speakAndContinueConversation(result)
+            return
+        }
+
+        // ── Multi-action: removals before additions ───────────────────────────────
+        if var intents = IntentParser.parseMultiAction(transcript, pills: pills), intents.count >= 2 {
+            // Sort: removals first
+            intents.sort { a, b in
+                let isRemoveA: Bool
+                switch a {
+                case .pillRemove, .pillRemoveMultiple: isRemoveA = true
+                default: isRemoveA = false
+                }
+                let isRemoveB: Bool
+                switch b {
+                case .pillRemove, .pillRemoveMultiple: isRemoveB = true
+                default: isRemoveB = false
+                }
+                return isRemoveA && !isRemoveB
+            }
+            VoiceTranscriptHistory.shared.record(
+                transcript: transcript,
+                note: intents.map { String(describing: $0) }.joined(separator: " + "),
+                origin: .multi)
+            var parts: [String] = []
+            var anyFailure = false
+            var lastSuccess: VoiceIntent? = nil
+            for intent in intents {
+                let r = await runner.run(intent, availablePills: pills, rawTranscript: transcript)
+                parts.append(r.message)
+                if case .failure = r.outcome { anyFailure = true }
+                // .question in multi-action: treat as failure (no re-listen in combined flow).
+                if case .question = r.outcome { anyFailure = true }
+                if case .success = r.outcome { lastSuccess = intent }
+            }
+            if let last = lastSuccess { conversationContext.update(last) }
+            let combined = VoiceActionResult(
+                outcome: anyFailure ? .failure : .success,
+                message: parts.joined(separator: " · ")
+            )
+            if anyFailure {
+                NotificationCenter.default.post(name: .botDizzy, object: nil)
+            }
+            VoiceCaptionManager.shared.setUserLine(transcript)
+            VoiceCaptionManager.shared.appendResponse(combined.message)
+            AppState.shared.voiceResult = combined
+            speakAndContinueConversation(combined)
+            return
+        }
+
+        // ── Relative context resolution ────────────────────────────────────────────
+        let intent: VoiceIntent
+        let transcriptOrigin: TranscriptOrigin
+        if conversationContext.lastIntent != nil,
+           let resolved = conversationContext.resolveRelative(transcript, pills: pills) {
+            intent = resolved
+            transcriptOrigin = .context
+        } else {
+            intent = IntentParser.parse(transcript, pills: pills)
+            transcriptOrigin = .parser
+        }
+
+        // ── Single command ─────────────────────────────────────────────────────────
+        let locale = VoiceEngine.shared.speechLocale
+        let tParseEnd = Date()
+        let parseMs   = Int(tParseEnd.timeIntervalSince(t0) * 1000)
+
+        // Update caption user line immediately
+        VoiceCaptionManager.shared.setUserLine(transcript)
+
+        var result = await runner.run(intent, availablePills: pills, rawTranscript: transcript)
+        var effectiveIntent = intent
+        VoiceTranscriptHistory.shared.record(transcript: transcript, intent: intent, origin: transcriptOrigin)
+
+        let tActionEnd = Date()
+        let actionMs   = Int(tActionEnd.timeIntervalSince(tParseEnd) * 1000)
+
+        // Incomplete phrase ("je veux que tu ajoutes…", nothing named): ask which pill
+        // and listen for it, instead of guessing or saying "pas compris".
+        var askedBack = false
+        if case .unknown = intent, let ask = runner.askIfIncomplete(transcript) {
+            result = ask
+            askedBack = true
+        }
+
+        // If unknown, try VoiceBrain (macOS 26 + Apple Intelligence) with streaming TTS.
+        if case .unknown = intent, !askedBack {
+            let tBrain0  = Date()
+            let brainWarm = VoiceBrain.shared.isSessionReady
+            var brainUsed = false
+
+            // A stale "finished speaking" handler from the previous turn would re-open
+            // the mic between two streamed sentences: drop it before streaming.
+            VoiceSpeaker.shared.onDidFinish = nil
+
+            let brain = await VoiceBrain.shared.resolveWithStreaming(
+                transcript, pills: pills
+            ) { sentence, hasActions in
+                // When the model is acting (tool call), its text is not spoken: the real
+                // outcome comes from VoiceActionRunner below ("C'est fait" must not be
+                // said before the action ran, or when it failed / needs a question).
+                if !hasActions { VoiceSpeaker.shared.enqueue(sentence, locale: locale) }
+                VoiceCaptionManager.shared.appendResponse(sentence)
+            }
+
+            let brainMs = Int(Date().timeIntervalSince(tBrain0) * 1000)
+            appendAppLog("nb.log",
+                "[Voice] turn: parse=\(parseMs)ms action=\(actionMs)ms brain=\(brainMs)ms (\(brainWarm ? "warm" : "cold"))")
+
+            if let brain {
+                if !brain.intents.isEmpty {
+                    // Run the actions the model asked for: removals before additions.
+                    var sorted = brain.intents
+                    sorted.sort { a, b in
+                        let ra: Bool = { switch a { case .pillRemove, .pillRemoveMultiple: return true; default: return false } }()
+                        let rb: Bool = { switch b { case .pillRemove, .pillRemoveMultiple: return true; default: return false } }()
+                        return ra && !rb
+                    }
+                    effectiveIntent = sorted[0]
+                    var parts: [String] = []
+                    var anyFailure = false
+                    var questionResult: VoiceActionResult? = nil
+                    for bi in sorted {
+                        let r = await runner.run(bi, availablePills: pills, rawTranscript: transcript)
+                        parts.append(r.message)
+                        switch r.outcome {
+                        case .success:
+                            effectiveIntent = bi
+                            VoiceTranscriptHistory.shared.record(transcript: transcript, intent: bi, origin: .brain)
+                        case .failure:
+                            anyFailure = true
+                        case .question:
+                            questionResult = r
+                        }
+                    }
+                    // Same path as a parser command below: short spoken confirmation,
+                    // or the question ("laquelle j'enlève ?") with its re-listen.
+                    VoiceCaptionManager.shared.clearResponse()
+                    result = questionResult ?? VoiceActionResult(
+                        outcome: anyFailure ? .failure : .success,
+                        message: parts.joined(separator: " · "))
+                } else if !brain.text.isEmpty {
+                    result = VoiceActionResult(outcome: .success, message: brain.text)
+                    brainUsed = true
+                }
+            }
+
+            if brainUsed {
+                // TTS sentences already enqueued via streaming. Enter conversation and
+                // continue once the speaker queue drains.
+                conversationContext.update(effectiveIntent)
+                consecutiveFailures = 0
+                AppState.shared.voiceResult = result
+                _enterConversationAfterStreamedSpeech()
+                return
+            }
+
+            appendAppLog("nb.log", "[Voice] turn: parse=\(parseMs)ms action=\(actionMs)ms brain=\(brainMs)ms (\(brainWarm ? "warm" : "cold")) — no result")
+        } else {
+            appendAppLog("nb.log", "[Voice] turn: parse=\(parseMs)ms action=\(actionMs)ms (parser)")
+        }
+
+        // Mid-conversation, a phrase with no command in it (talking to someone else,
+        // "on s'en fout c'est"…) is dropped silently: no dizzy Mochi, no "pas compris".
+        // Two in a row end the conversation.
+        if case .unknown = effectiveIntent, result.outcome == .failure {
+            if isInConversation {
+                // Second miss (or noise while waiting for an answer): stop there.
+                appendAppLog("nb.log", "[Voice] answer had no command in it, ignored")
+                closeVoiceTurn()
+                return
+            }
+            // First miss right after "OK Coucou": ask once, like a person would
+            // ("Pardon, tu peux répéter ?"), then listen for the repeat.
+            let again = VoiceActionResult(
+                outcome: .success,
+                message: VoiceActionRunner.localizedString("voice.ask-repeat", locale: runner.commandLocale))
+            VoiceCaptionManager.shared.appendResponse(again.message)
+            AppState.shared.voiceResult = again
+            speakAndContinueConversation(again)
+            return
+        }
+
+        // Mochi reaction + consecutive failure tracking
+        switch result.outcome {
+        case .success:
+            conversationContext.update(effectiveIntent)
+            consecutiveFailures = 0
+        case .failure:
+            NotificationCenter.default.post(name: .botDizzy, object: nil)
+            if isInConversation { consecutiveFailures += 1 }
+        case .question:
+            break   // Mochi will show listening after re-open
+        }
+
+        // After 2 consecutive failures in conversation mode: end without speaking
+        if isInConversation && consecutiveFailures >= 2 {
+            consecutiveFailures = 0
+            endConversation(speaking: false)
+            return
+        }
+
+        // Update caption with result; island stays compact (no expand).
+        VoiceCaptionManager.shared.appendResponse(result.message)
+        AppState.shared.voiceResult = result
+
+        if case .question = result.outcome {
+            // Speak the question aloud, then re-listen once speech finishes.
+            // Give 5 s initial silence so the user has time to read/hear the question.
+            let speaker = VoiceSpeaker.shared
+            if VoiceSettings.speakEnabled {
+                speaker.speak(result.message, locale: locale)
+                speaker.onDidFinish = { [weak self] in
+                    Task { @MainActor in
+                        guard self != nil else { return }
+                        VoiceEngine.shared.startListeningDirectly(firstWordTimeout: 5.0)
+                    }
+                }
+            } else {
+                voiceResultWork?.cancel()
+                voiceResultWork = nil
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                    guard self != nil else { return }
+                    VoiceEngine.shared.startListeningDirectly(firstWordTimeout: 5.0)
+                }
+            }
+        } else {
+            speakAndContinueConversation(result)
+        }
+    }
+
+    @MainActor
+    private func showVoiceResult(_ result: VoiceActionResult, emote: BotEmote? = nil) {
+        if let emote = emote {
+            NotificationCenter.default.post(name: .triggerEmote, object: emote)
+        } else if result.outcome == .failure {
+            NotificationCenter.default.post(name: .botDizzy, object: nil)
+        }
+        AppState.shared.voiceResult = result
+        expand(to: .voiceResult)
+        scheduleVoiceDismiss(delay: 2.0)
+    }
+
+    /// Speak the result, then stop listening — unless the answer is a question, in which
+    /// case listen once for the reply. Coucou cannot tell whether I am talking to it or
+    /// to someone else, so it only keeps the mic open when it asked something.
+    @MainActor
+    private func speakAndContinueConversation(_ result: VoiceActionResult) {
+        let asks = Self.isQuestion(result)
+        let speaker = VoiceSpeaker.shared
+        if VoiceSettings.speakEnabled {
+            speaker.speak(result.message, locale: VoiceEngine.shared.speechLocale)
+            speaker.onDidFinish = { [weak self] in
+                Task { @MainActor in self?.finishVoiceTurn(expectAnswer: asks) }
+            }
+        } else {
+            // No speech: leave the caption up a moment, then finish.
+            voiceResultWork?.cancel()
+            let item = DispatchWorkItem { [weak self] in
+                Task { @MainActor in self?.finishVoiceTurn(expectAnswer: asks) }
+            }
+            voiceResultWork = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: item)
+        }
+    }
+
+    /// After the on-device model's streamed answer: same rule once the speech drains.
+    @MainActor
+    private func _enterConversationAfterStreamedSpeech() {
+        let asks = Self.isQuestion(AppState.shared.voiceResult)
+        let speaker = VoiceSpeaker.shared
+        if speaker.isSpeaking {
+            speaker.onDidFinish = { [weak self] in
+                Task { @MainActor in self?.finishVoiceTurn(expectAnswer: asks) }
+            }
+        } else {
+            finishVoiceTurn(expectAnswer: asks)
+        }
+    }
+
+    /// A question Coucou asked: an explicit follow-up, or an answer ending with "?".
+    private static func isQuestion(_ result: VoiceActionResult?) -> Bool {
+        guard let result else { return false }
+        if case .question = result.outcome { return true }
+        let t = result.message.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.hasSuffix("?") || t.hasSuffix("？") || t.hasSuffix("؟")
+    }
+
+    /// Listen once for the reply to Coucou's question, or close the turn.
+    @MainActor
+    private func finishVoiceTurn(expectAnswer: Bool) {
+        // One follow-up only: the reply to a question closes the turn after it is handled
+        // (unless that reply leads to another question, e.g. "which one do I remove?").
+        if expectAnswer && VoiceEngine.shared.isEnabled {
+            isInConversation = true
+            VoiceBrain.shared.beginConversation()
+            if AppState.shared.soundEnabled { SoundEngine.shared.play("tick") }
+            VoiceEngine.shared.startConversationTurn()
+        } else {
+            closeVoiceTurn()
+        }
+    }
+
+    /// Stop listening and let the island settle. The context (last action, model session)
+    /// stays 90 s so a new "OK Coucou, et Stripe aussi" still understands "aussi".
+    @MainActor
+    private func closeVoiceTurn() {
+        isInConversation = false
+        consecutiveFailures = 0
+        hasSpokenPasCompris = false
+        VoiceEngine.shared.endConversation()
+        VoiceCaptionManager.shared.endConversation()
+        scheduleVoiceDismiss(delay: 0.3)
+        voiceContextExpiry?.cancel()
+        let expiry = DispatchWorkItem { [weak self] in
+            Task { @MainActor in
+                self?.conversationContext.reset()
+                VoiceBrain.shared.endConversation()
+            }
+        }
+        voiceContextExpiry = expiry
+        DispatchQueue.main.asyncAfter(deadline: .now() + 90, execute: expiry)
+    }
+
+    /// Kept for the paths that still call it (collapse, end phrase): close and forget.
+    @MainActor
+    private func endConversation(speaking: Bool) {
+        closeVoiceTurn()
+    }
+
+    @MainActor
+    private func scheduleVoiceDismiss(delay: TimeInterval) {
+        voiceResultWork?.cancel()
+        VoiceCaptionManager.shared.hide(after: delay)
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            AppState.shared.voiceResult = nil
+            AppState.shared.voiceActive = false
+            // Reset view before collapsing so shouldIgnoreWake never sees a stale .voiceResult.
+            AppState.shared.view = self.defaultView()
+            self.fsm.voiceFinished()
+        }
+        voiceResultWork = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+    }
+}
+#endif
 
 // MARK: - Notification names
 
