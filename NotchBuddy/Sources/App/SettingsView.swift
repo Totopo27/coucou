@@ -1142,6 +1142,8 @@ struct SettingsView: View {
             }
             .padding(.vertical, 4)
         }
+
+        MCPServersSettings()
     }
 
     // MARK: - Integrations section

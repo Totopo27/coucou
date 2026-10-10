@@ -818,6 +818,13 @@ final class HookServer: @unchecked Sendable {
     /// Called by ApprovalView buttons. Writes the decision to the waiting nb-hook and cleans up.
     @MainActor
     func sendApprovalDecision(_ decision: String) {
+        // Handle MCP Tool approval from chat
+        if AppState.shared.pendingApproval?.pillId == "mcp_tool" {
+            let isAllowed = (decision == "allow" || decision == "always")
+            MCPApprovalManager.shared.handleDecision(isAllowed: isAllowed)
+            return
+        }
+
         // Only intercept a demo card — a real card has a live fd (pendingApprovalFD >= 0).
         if DemoEngine.shared.isActive,
            AppState.shared.pendingApproval?.sessionId == "demo_session",
