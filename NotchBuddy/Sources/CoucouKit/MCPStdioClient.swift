@@ -1,13 +1,5 @@
 import Foundation
 
-enum MCPClientError: Error, Equatable {
-    case processStartFailed(String)
-    case timeout(String)
-    case invalidResponse(String)
-    case serverError(String)
-    case terminated
-}
-
 #if !APPSTORE
 /// Actor managing the stdio lifecycle of a single MCP server subprocess.
 actor MCPStdioClient: MCPClientProtocol {

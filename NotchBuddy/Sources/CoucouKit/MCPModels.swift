@@ -1,5 +1,14 @@
 import Foundation
 
+/// Errors encountered during MCP protocol communication.
+enum MCPClientError: Error, Equatable, Sendable {
+    case processStartFailed(String)
+    case timeout(String)
+    case invalidResponse(String)
+    case serverError(String)
+    case terminated
+}
+
 /// Where an imported MCP server configuration was found on this Mac.
 enum MCPServerSource: String, Codable, Equatable, Sendable, CaseIterable {
     case claudeDesktop = "claude-desktop"
