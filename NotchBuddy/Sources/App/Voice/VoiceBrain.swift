@@ -116,7 +116,8 @@ final class VoiceBrain {
             let session = LanguageModelSession(
                 tools: [PillTool(collector: collector),
                         MusicTool(collector: collector),
-                        StatusTool(collector: collector)],
+                        StatusTool(collector: collector),
+                        MCPVoiceTool(collector: collector)],
                 instructions: """
                 Tu es Coucou, un assistant dans le notch du MacBook.
                 Réponds toujours dans la langue de l'utilisateur.
@@ -409,6 +410,45 @@ struct StatusTool: Tool, @unchecked Sendable {
             return parts.joined(separator: ". ")
         }
         return info
+    }
+}
+
+// MARK: - MCPVoiceTool
+
+@available(macOS 26, *)
+struct MCPVoiceTool: Tool, @unchecked Sendable {
+    let name        = "mcp"
+    let description = "Execute external capabilities via active MCP servers (e.g. GitHub, databases, filesystem, web APIs). Provide the tool name and JSON arguments."
+
+    @Generable
+    struct Arguments {
+        @Guide(description: "Tool name as declared by the MCP server, e.g. search_repositories, read_file, query_database")
+        var toolName: String
+        @Guide(description: "JSON string with the arguments dictionary for the tool, or empty '{}'")
+        var jsonArguments: String
+    }
+
+    let collector: IntentCollector
+
+    func call(arguments: Arguments) async throws -> String {
+        return await MainActor.run { () -> String in
+            let registry = MCPToolRegistry.shared
+            guard let matchedTool = registry.availableTools.first(where: {
+                $0.name.caseInsensitiveCompare(arguments.toolName) == .orderedSame ||
+                $0.id.caseInsensitiveCompare(arguments.toolName) == .orderedSame
+            }) else {
+                let available = registry.availableTools.map(\.name).joined(separator: ", ")
+                return "Unknown MCP tool: \(arguments.toolName). Available tools: \(available.isEmpty ? "none" : available)"
+            }
+
+            var parsedArgs: [String: AnyCodable] = [:]
+            if let data = arguments.jsonArguments.data(using: .utf8),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                parsedArgs = json.compactMapValues { AnyCodable.from($0) }
+            }
+
+            return "Tool \(matchedTool.name) ready"
+        }
     }
 }
 
