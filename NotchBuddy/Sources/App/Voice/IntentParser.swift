@@ -15,6 +15,12 @@ enum IntentParser {
         let words = norm.split(separator: " ").map(String.init)
         guard !words.isEmpty else { return .unknown }
 
+        // Email, questions about the services, opening an app (VoiceQuery).
+        if let m = VoiceQuery.mail(of: raw) { return .mail(m) }
+        if let q = VoiceQuery.webQuery(of: raw) { return .webSearch(query: q) }
+        if let t = VoiceQuery.topic(of: raw) { return .query(t) }
+        if let app = VoiceQuery.appToOpen(raw) { return .openApp(name: app) }
+
         // rawWords: same splits as normalise but no diacritics strip, no letter filter, original case
         let rawWords0 = buildRawWords(raw)
         // defilter both arrays in parallel: ma→la, mon→le, strip filler words
@@ -158,10 +164,26 @@ enum IntentParser {
             // "lance ma playlist" with no name: the runner asks which one.
             return .musicPlayPlaylist(name: "")
         }
-        // "tu peux lancer ma playlist" (the trigger needs a name after it): ask which one.
+        // "tu peux lancer ma playlist" / "play my Focus playlist" (English puts the name
+        // before the word): take what sits between the verb and "playlist", or ask.
         if fwords.last == "playlist" || fwords.last == "playlists",
-           fwords.contains(where: { ["lance", "mets", "met", "joue", "balance", "play", "start"].contains($0) }) {
-            return .musicPlayPlaylist(name: "")
+           let v = fwords.firstIndex(where: { ["lance", "mets", "met", "joue", "balance", "play", "start"].contains($0) }) {
+            let fillers: Set<String> = ["my", "the", "a", "la", "le", "les", "ma", "mon", "une", "un"]
+            let between = (v + 1)..<(fwords.count - 1)
+            let name = between.filter { !fillers.contains(fwords[$0]) }
+                .map { $0 < frawWords.count ? frawWords[$0] : fwords[$0] }
+                .joined(separator: " ")
+            return .musicPlayPlaylist(name: name)
+        }
+
+        // "make Cursor my main pill", "set Cursor as main pill", "switch the main pill to Cursor"
+        if fwords.contains("main") && (fwords.contains("pill") || fwords.contains("pilule")) {
+            let noise: Set<String> = ["make", "set", "as", "my", "the", "main", "pill", "to", "switch", "change",
+                                      "use", "put", "is", "be", "should", "please", "now"]
+            let rest = fwords.filter { !noise.contains($0) }.joined(separator: " ")
+            if !rest.isEmpty, let id = EntityResolver.resolve(rest, from: pills, category: .workspace) {
+                return .pillSetMain(id: id)
+            }
         }
 
         // ── 8. pillMain triggers (setMain-only verbs) ────────────────────────

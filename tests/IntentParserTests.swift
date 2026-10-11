@@ -310,6 +310,10 @@ enum IntentParserTests {
                     parse("OK tu peux démarrer Apple Music j'ai envie d'écouter du Drake", pills: pills), "drake")
         check("j'ai envie d'écouter de la musique",
               parse("j'ai envie d'écouter de la musique", pills: pills), .musicPlay(target: nil))
+        check("make Cursor my main pill",
+              parse("make Cursor my main pill", pills: pills), .pillSetMain(id: "agent_cursor"))
+        checkPlaylist("play my Focus playlist", parse("play my Focus playlist", pills: pills), "focus")
+        check("add Gemini (EN)", parse("add Gemini", pills: pills), .pillAdd(id: "agent_gemini"))
         check("tu peux lancer ma playlist",
               parse("tu peux lancer ma playlist", pills: pills), .musicPlayPlaylist(name: ""))
         checkMultiAction("Enlève la pilule GT et mets Stripe à la place",
